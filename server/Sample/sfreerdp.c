@@ -19,6 +19,8 @@
  * limitations under the License.
  */
 
+#include <freerdp/utils/pcap.h>
+#include <winpr/wtypes.h>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -424,49 +426,77 @@ static BOOL test_sleep_tsdiff(UINT32* old_sec, UINT32* old_usec, UINT32 new_sec,
 
 BOOL tf_peer_dump_rfx(freerdp_peer* client)
 {
-	wStream* s;
-	UINT32 prev_seconds;
-	UINT32 prev_useconds;
-	rdpUpdate* update;
-	rdpPcap* pcap_rfx;
-	pcap_record record;
-	s = Stream_New(NULL, 512);
-
-	if (!s)
-		return FALSE;
-
-	update = client->update;
-
-	if (!(pcap_rfx = pcap_open(test_pcap_file, FALSE)))
-		return FALSE;
-
-	prev_seconds = prev_useconds = 0;
-
-	while (pcap_has_next_record(pcap_rfx))
+	while (true)
 	{
-		if (!pcap_get_next_record_header(pcap_rfx, &record))
-			break;
+    	wStream* s;
+		UINT32 prev_seconds;
+		UINT32 prev_useconds;
+		rdpUpdate* update;
+		rdpPcap* pcap_rfx;
+		pcap_record record;
+		s = Stream_New(NULL, 512);
 
-		if (!Stream_EnsureCapacity(s, record.length))
-			break;
+		if (!s)
+			return FALSE;
 
-		record.data = Stream_Buffer(s);
-		pcap_get_next_record_content(pcap_rfx, &record);
-		Stream_SetPointer(s, Stream_Buffer(s) + Stream_Capacity(s));
+		update = client->update;
 
-		if (test_dump_rfx_realtime &&
-		    test_sleep_tsdiff(&prev_seconds, &prev_useconds, record.header.ts_sec,
-		                      record.header.ts_usec) == FALSE)
-			break;
+		char* username = client->settings->Username;
+		if (strncmp(username, "heavy", strlen("heavy")) == 0)
+		{
+			if (!(pcap_rfx = pcap_open("replay_heavy.pcap", FALSE)))
+			{
+				return FALSE;
+			}
+		} else if (strncmp(username, "medium", strlen("medium")) == 0)
+		{
+			if (!(pcap_rfx = pcap_open("replay_medium.pcap", FALSE)))
+			{
+				return FALSE;
+			}
+		} else if (strncmp(username, "light", strlen("light")) == 0)
+		{
+			if (!(pcap_rfx = pcap_open("replay_light.pcap", FALSE)))
+			{
+				return FALSE;
+			}
+		} else 
+		{
+			if (!(pcap_rfx = pcap_open(test_pcap_file, FALSE)))
+				return FALSE;
+		}
 
-		update->SurfaceCommand(update->context, s);
+		prev_seconds = prev_useconds = 0;
 
+		while (pcap_has_next_record(pcap_rfx))
+		{
+			if (!pcap_get_next_record_header(pcap_rfx, &record))
+				break;
+
+			if (!Stream_EnsureCapacity(s, record.length))
+				break;
+
+			record.data = Stream_Buffer(s);
+			pcap_get_next_record_content(pcap_rfx, &record);
+			Stream_SetPointer(s, Stream_Buffer(s) + record.length);
+
+			if (test_dump_rfx_realtime &&
+			    test_sleep_tsdiff(&prev_seconds, &prev_useconds, record.header.ts_sec,
+			                      record.header.ts_usec) == FALSE)
+				break;
+
+			update->SurfaceCommand(update->context, s);
+
+			if (client->CheckFileDescriptor(client) != TRUE)
+				break;
+		}
+
+		Stream_Free(s, TRUE);
+		pcap_close(pcap_rfx);
 		if (client->CheckFileDescriptor(client) != TRUE)
 			break;
 	}
 
-	Stream_Free(s, TRUE);
-	pcap_close(pcap_rfx);
 	return TRUE;
 }
 
@@ -567,11 +597,11 @@ BOOL tf_peer_post_connect(freerdp_peer* client)
 
 	/* A real server should tag the peer as activated here and start sending updates in main loop.
 	 */
-	if (!test_peer_load_icon(client))
-	{
-		WLog_DBG(TAG, "Unable to load icon");
-		return FALSE;
-	}
+	// if (!test_peer_load_icon(client))
+	// {
+	// 	WLog_DBG(TAG, "Unable to load icon");
+	// 	return FALSE;
+	// }
 
 	if (WTSVirtualChannelManagerIsChannelJoined(context->vcm, "rdpdbg"))
 	{
@@ -923,7 +953,7 @@ static void test_server_mainloop(freerdp_listener* instance)
 
 int main(int argc, char* argv[])
 {
-	const char spcap[] = "--";
+	const char spcap[] = "--pcap=";
 	const char sfast[] = "--fast";
 	const char sport[] = "--port=";
 	const char slocal_only[] = "--local_only";
@@ -955,8 +985,14 @@ int main(int argc, char* argv[])
 		}
 		else if (strncmp(arg, slocal_only, sizeof(slocal_only)) == 0)
 			localOnly = TRUE;
-		else if (strncmp(arg, spcap, sizeof(spcap)) == 0)
+		else if (strncmp(arg, spcap, sizeof(spcap) - 1) == 0)
+		{			
+			StrSep(&arg, "=");
+			if (!arg)
+				return -1;
+
 			test_pcap_file = arg;
+		}			
 	}
 
 	WTSRegisterWtsApiFunctionTable(FreeRDP_InitWtsApi());
@@ -985,6 +1021,7 @@ int main(int argc, char* argv[])
 		return -1;
 	}
 
+	instance->OpenLocal(instance, file);
 	if ((localOnly || instance->Open(instance, NULL, port)) && instance->OpenLocal(instance, file))
 	{
 		/* Entering the server main loop. In a real server the listener can be run in its own
