@@ -212,6 +212,15 @@ static int fastpath_recv_update(rdpFastPath* fastpath, BYTE updateCode, UINT32 s
 		updateCode < ARRAYSIZE(FASTPATH_UPDATETYPE_STRINGS) ? FASTPATH_UPDATETYPE_STRINGS[updateCode] : "???", updateCode, size);
 #endif
 
+
+    wStream* record;
+    record = transport_send_stream_init(fastpath->rdp->transport, FASTPATH_MAX_PACKET_SIZE);
+    if (!record)
+        return -1;
+    BYTE* buffer = record->pointer;
+    Stream_Write_UINT8(record, updateCode);
+    BYTE* ptr = s->pointer;
+
 	switch (updateCode)
 	{
 		case FASTPATH_UPDATETYPE_ORDERS:
@@ -221,8 +230,10 @@ static int fastpath_recv_update(rdpFastPath* fastpath, BYTE updateCode, UINT32 s
 
 		case FASTPATH_UPDATETYPE_BITMAP:
 		case FASTPATH_UPDATETYPE_PALETTE:
-			if (!fastpath_recv_update_common(fastpath, s))
-				return -1;
+			if (!fastpath_recv_update_common(fastpath, s)) {
+				Stream_Release(record);
+                return -1;
+            }
 			break;
 
 		case FASTPATH_UPDATETYPE_SYNCHRONIZE:
@@ -248,26 +259,34 @@ static int fastpath_recv_update(rdpFastPath* fastpath, BYTE updateCode, UINT32 s
 			break;
 
 		case FASTPATH_UPDATETYPE_PTR_POSITION:
-			if (!update_read_pointer_position(s, &pointer->pointer_position))
+			if (!update_read_pointer_position(s, &pointer->pointer_position)) {
+				Stream_Release(record);
 				return -1;
+            }
 			IFCALL(pointer->PointerPosition, context, &pointer->pointer_position);
 			break;
 
 		case FASTPATH_UPDATETYPE_COLOR:
-			if (!update_read_pointer_color(s, &pointer->pointer_color, 24))
+			if (!update_read_pointer_color(s, &pointer->pointer_color, 24)) {
+				Stream_Release(record);
 				return -1;
+            }
 			IFCALL(pointer->PointerColor, context, &pointer->pointer_color);
 			break;
 
 		case FASTPATH_UPDATETYPE_CACHED:
-			if (!update_read_pointer_cached(s, &pointer->pointer_cached))
+			if (!update_read_pointer_cached(s, &pointer->pointer_cached)) {
+				Stream_Release(record);
 				return -1;
+            }
 			IFCALL(pointer->PointerCached, context, &pointer->pointer_cached);
 			break;
 
 		case FASTPATH_UPDATETYPE_POINTER:
-			if (!update_read_pointer_new(s, &pointer->pointer_new))
+			if (!update_read_pointer_new(s, &pointer->pointer_new)) {
+				Stream_Release(record);
 				return -1;
+            }
 			IFCALL(pointer->PointerNew, context, &pointer->pointer_new);
 			break;
 
@@ -275,6 +294,20 @@ static int fastpath_recv_update(rdpFastPath* fastpath, BYTE updateCode, UINT32 s
 			DEBUG_WARN("unknown updateCode 0x%X", updateCode);
 			break;
 	}
+
+    if (fastpath->rdp->update->dump_rfx == TRUE) {
+        size_t record_size = s->pointer - ptr;
+
+        Stream_EnsureRemainingCapacity(record, record_size);
+
+        Stream_Write(record, ptr, record_size);
+
+        pcap_add_record(fastpath->rdp->update->pcap_rfx, Stream_Buffer(record),
+                Stream_GetPosition(record));
+        pcap_flush(fastpath->rdp->update->pcap_rfx);
+    }
+
+    Stream_Release(record);
 
 	return status;
 }
