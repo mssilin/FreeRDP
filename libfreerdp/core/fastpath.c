@@ -382,7 +382,14 @@ static int fastpath_recv_update(rdpFastPath* fastpath, BYTE updateCode, wStream*
 	          fastpath_update_to_string(updateCode), updateCode, Stream_GetRemainingLength(s));
 #endif
 
-	switch (updateCode)
+    wStream* record;
+    record = transport_send_stream_init(fastpath->rdp->transport, FASTPATH_MAX_PACKET_SIZE);
+    if (!record)
+        return -1;
+    Stream_Write_UINT8(record, updateCode);
+    BYTE* ptr = s->pointer;
+	
+    switch (updateCode)
 	{
 		case FASTPATH_UPDATETYPE_ORDERS:
 			rc = fastpath_recv_orders(fastpath, s);
@@ -489,9 +496,25 @@ static int fastpath_recv_update(rdpFastPath* fastpath, BYTE updateCode, wStream*
 	{
 		WLog_ERR(TAG, "Fastpath update %s [%" PRIx8 "] failed, status %d",
 		         fastpath_update_to_string(updateCode), updateCode, status);
-		return -1;
+		Stream_Release(record);
+        return -1;
 	}
 
+    if (fastpath->rdp->update->dump_rfx == TRUE) {
+        size_t record_size = s->pointer - ptr;
+        WLog_DBG(TAG, "record size = %d", record_size);
+
+        if (!Stream_EnsureRemainingCapacity(record, record_size)) {
+            Stream_Release(record);
+            return -1;
+        }
+
+        Stream_Write(record, ptr, record_size);
+        pcap_add_record(fastpath->rdp->update->pcap_rfx, Stream_Buffer(record), Stream_GetPosition(record));
+        pcap_flush(fastpath->rdp->update->pcap_rfx);
+    }
+
+    Stream_Release(record);
 	return status;
 }
 
